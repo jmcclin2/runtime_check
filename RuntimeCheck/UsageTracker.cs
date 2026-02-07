@@ -5,12 +5,18 @@ using System.Text;
 
 public class UsageTracker
 {
-    public static string StorageDirectory { get; set; } = 
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), 
+    public static string StorageDirectory { get; set; } =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                      "UsageTrackerApp", "Usage");
-    
+
     public const double MAX_OFFLINE_HOURS = 1.0;
-    
+}
+
+public class UsageSession
+{
+    private readonly string _filePath;
+    private readonly string _credentialString;
+
     private class UsageData
     {
         public DateTime FirstLogin { get; set; }
@@ -20,28 +26,40 @@ public class UsageTracker
         public bool IsOnline { get; set; }
         public DateTime SessionStartTime { get; set; }
     }
-    
-    private static string GetFilePath(string username, string password)
+
+    public UsageSession(string username, string password)
     {
+        _credentialString = $"{username.ToLowerInvariant()}:{password}";
+
         using (var sha256 = SHA256.Create())
         {
-            string combined = $"{username}:{password}";
-            byte[] hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(combined));
+            byte[] hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(_credentialString));
             string filename = Convert.ToBase64String(hash)
                 .Replace('/', '_')
                 .Replace('+', '-')
                 .Replace("=", "") + ".dat";
-            
-            Directory.CreateDirectory(StorageDirectory);
-            return Path.Combine(StorageDirectory, filename);
+
+            Directory.CreateDirectory(UsageTracker.StorageDirectory);
+            _filePath = Path.Combine(UsageTracker.StorageDirectory, filename);
         }
     }
-    
-    private static void SaveUsageData(string username, string password, UsageData data)
+
+    private (byte[] key, byte[] iv) DeriveKeyAndIV(byte[] salt)
     {
-        string filePath = GetFilePath(username, password);
-        byte[] entropy = Encoding.UTF8.GetBytes($"{username}:{password}");
-        
+        using (var pbkdf2 = new Rfc2898DeriveBytes(
+            _credentialString, salt, 100000, HashAlgorithmName.SHA256))
+        {
+            byte[] key = pbkdf2.GetBytes(32);
+            byte[] iv = pbkdf2.GetBytes(16);
+            return (key, iv);
+        }
+    }
+
+    private void SaveUsageData(UsageData data)
+    {
+        byte[] salt = RandomNumberGenerator.GetBytes(16);
+        var (key, iv) = DeriveKeyAndIV(salt);
+
         using (var ms = new MemoryStream())
         using (var writer = new BinaryWriter(ms))
         {
@@ -52,36 +70,62 @@ public class UsageTracker
             writer.Write(data.IsOnline);
             writer.Write(data.SessionStartTime.Ticks);
 
-            byte[] encrypted = ProtectedData.Protect(ms.ToArray(), entropy, DataProtectionScope.CurrentUser);
-            File.WriteAllBytes(filePath, encrypted);
+            byte[] plaintext = ms.ToArray();
+
+            using (var aes = Aes.Create())
+            {
+                aes.Key = key;
+                aes.IV = iv;
+                byte[] encrypted = aes.CreateEncryptor().TransformFinalBlock(plaintext, 0, plaintext.Length);
+
+                using (var outMs = new MemoryStream())
+                using (var outWriter = new BinaryWriter(outMs))
+                {
+                    outWriter.Write(salt);
+                    outWriter.Write(encrypted);
+                    File.WriteAllBytes(_filePath, outMs.ToArray());
+                }
+            }
         }
     }
-    
-    private static UsageData? LoadUsageData(string username, string password)
+
+    private UsageData? LoadUsageData()
     {
-        string filePath = GetFilePath(username, password);
-        
-        if (!File.Exists(filePath))
+        if (!File.Exists(_filePath))
             return null;
-        
+
         try
         {
-            byte[] entropy = Encoding.UTF8.GetBytes($"{username}:{password}");
-            byte[] encrypted = File.ReadAllBytes(filePath);
-            byte[] decrypted = ProtectedData.Unprotect(encrypted, entropy, DataProtectionScope.CurrentUser);
-            
-            using (var ms = new MemoryStream(decrypted))
-            using (var reader = new BinaryReader(ms))
+            byte[] fileData = File.ReadAllBytes(_filePath);
+            if (fileData.Length < 16)
+                return null;
+
+            byte[] salt = new byte[16];
+            Array.Copy(fileData, 0, salt, 0, 16);
+            byte[] encrypted = new byte[fileData.Length - 16];
+            Array.Copy(fileData, 16, encrypted, 0, encrypted.Length);
+
+            var (key, iv) = DeriveKeyAndIV(salt);
+
+            using (var aes = Aes.Create())
             {
-                return new UsageData
+                aes.Key = key;
+                aes.IV = iv;
+                byte[] decrypted = aes.CreateDecryptor().TransformFinalBlock(encrypted, 0, encrypted.Length);
+
+                using (var ms = new MemoryStream(decrypted))
+                using (var reader = new BinaryReader(ms))
                 {
-                    FirstLogin = new DateTime(reader.ReadInt64()),
-                    LastLogin = new DateTime(reader.ReadInt64()),
-                    LastOnlineLogin = new DateTime(reader.ReadInt64()),
-                    TotalOfflineTime = new TimeSpan(reader.ReadInt64()),
-                    IsOnline = reader.ReadBoolean(),
-                    SessionStartTime = new DateTime(reader.ReadInt64())
-                };
+                    return new UsageData
+                    {
+                        FirstLogin = new DateTime(reader.ReadInt64()),
+                        LastLogin = new DateTime(reader.ReadInt64()),
+                        LastOnlineLogin = new DateTime(reader.ReadInt64()),
+                        TotalOfflineTime = new TimeSpan(reader.ReadInt64()),
+                        IsOnline = reader.ReadBoolean(),
+                        SessionStartTime = new DateTime(reader.ReadInt64())
+                    };
+                }
             }
         }
         catch (CryptographicException)
@@ -89,12 +133,12 @@ public class UsageTracker
             return null;
         }
     }
-    
-    public static LoginResult ProcessOnlineLogin(string username, string password)
+
+    public LoginResult ProcessOnlineLogin()
     {
         DateTime now = DateTime.Now;
-        UsageData? data = LoadUsageData(username, password);
-        
+        UsageData? data = LoadUsageData();
+
         if (data == null)
         {
             data = new UsageData
@@ -105,14 +149,14 @@ public class UsageTracker
                 TotalOfflineTime = TimeSpan.Zero,
                 IsOnline = true
             };
-            SaveUsageData(username, password, data);
-            
+            SaveUsageData(data);
+
             return new LoginResult
             {
                 Success = true,
                 IsFirstLogin = true,
-                RemainingOfflineHours = MAX_OFFLINE_HOURS,
-                Message = $"First login successful. You have {MAX_OFFLINE_HOURS} hour(s) of offline usage."
+                RemainingOfflineHours = UsageTracker.MAX_OFFLINE_HOURS,
+                Message = $"First login successful. You have {UsageTracker.MAX_OFFLINE_HOURS} hour(s) of offline usage."
             };
         }
         else
@@ -121,24 +165,24 @@ public class UsageTracker
             data.LastOnlineLogin = now;
             data.TotalOfflineTime = TimeSpan.Zero;
             data.IsOnline = true;
-            SaveUsageData(username, password, data);
-            
+            SaveUsageData(data);
+
             return new LoginResult
             {
                 Success = true,
                 IsFirstLogin = false,
-                RemainingOfflineHours = MAX_OFFLINE_HOURS,
+                RemainingOfflineHours = UsageTracker.MAX_OFFLINE_HOURS,
                 TotalOfflineHoursUsed = 0,
-                Message = $"Online login successful. Your {MAX_OFFLINE_HOURS} hour(s) of offline usage has been reset."
+                Message = $"Online login successful. Your {UsageTracker.MAX_OFFLINE_HOURS} hour(s) of offline usage has been reset."
             };
         }
     }
-    
-    public static LoginResult ProcessOfflineLogin(string username, string password)
+
+    public LoginResult ProcessOfflineLogin()
     {
         DateTime now = DateTime.Now;
-        UsageData? data = LoadUsageData(username, password);
-        
+        UsageData? data = LoadUsageData();
+
         if (data == null)
         {
             return new LoginResult
@@ -147,8 +191,20 @@ public class UsageTracker
                 Message = "First login must be online. Please connect to the internet."
             };
         }
-        
-        if (data.TotalOfflineTime.TotalHours >= MAX_OFFLINE_HOURS)
+
+        if (now < data.LastLogin)
+        {
+            return new LoginResult
+            {
+                Success = false,
+                TotalOfflineHoursUsed = data.TotalOfflineTime.TotalHours,
+                RemainingOfflineHours = UsageTracker.MAX_OFFLINE_HOURS - data.TotalOfflineTime.TotalHours,
+                Message = "Clock manipulation detected. System time is earlier than last recorded session. " +
+                          "Please connect to the internet to continue."
+            };
+        }
+
+        if (data.TotalOfflineTime.TotalHours >= UsageTracker.MAX_OFFLINE_HOURS)
         {
             return new LoginResult
             {
@@ -163,10 +219,10 @@ public class UsageTracker
         data.LastLogin = now;
         data.IsOnline = false;
         data.SessionStartTime = now;
-        SaveUsageData(username, password, data);
+        SaveUsageData(data);
 
-        double hoursRemaining = MAX_OFFLINE_HOURS - data.TotalOfflineTime.TotalHours;
-        
+        double hoursRemaining = UsageTracker.MAX_OFFLINE_HOURS - data.TotalOfflineTime.TotalHours;
+
         return new LoginResult
         {
             Success = true,
@@ -187,12 +243,12 @@ public class UsageTracker
             }
         };
     }
-    
-    public static HeartbeatResult UpdateHeartbeat(string username, string password)
+
+    public HeartbeatResult UpdateHeartbeat()
     {
         DateTime now = DateTime.Now;
-        UsageData? data = LoadUsageData(username, password);
-        
+        UsageData? data = LoadUsageData();
+
         if (data == null)
         {
             return new HeartbeatResult
@@ -201,7 +257,7 @@ public class UsageTracker
                 Message = "No user data found."
             };
         }
-        
+
         if (!data.IsOnline)
         {
             TimeSpan timeSinceLastUpdate = now - data.LastLogin;
@@ -220,7 +276,7 @@ public class UsageTracker
         }
 
         data.LastLogin = now;
-        SaveUsageData(username, password, data);
+        SaveUsageData(data);
 
         return new HeartbeatResult
         {
@@ -232,14 +288,13 @@ public class UsageTracker
                 LastLoginDate = data.LastLogin,
                 LastOnlineLoginDate = data.LastOnlineLogin,
                 TotalOfflineHours = data.TotalOfflineTime.TotalHours,
-                RemainingOfflineHours = MAX_OFFLINE_HOURS - data.TotalOfflineTime.TotalHours,
+                RemainingOfflineHours = UsageTracker.MAX_OFFLINE_HOURS - data.TotalOfflineTime.TotalHours,
                 IsCurrentlyOnline = data.IsOnline,
                 CurrentSessionDuration = now - data.SessionStartTime,
                 TimeManipulationDetected = false
             }
         };
     }
-    
 }
 
 public class LoginResult

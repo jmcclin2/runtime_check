@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -9,17 +9,19 @@ class Program
     static async Task Main(string[] args)
     {
         Console.WriteLine("=== Usage Tracker Test - Offline Mode ===\n");
-        
+
         UsageTracker.StorageDirectory = Path.Combine(
             AppDomain.CurrentDomain.BaseDirectory,
             "TestData"
         );
-        
+
         Console.Write("Username: ");
         string username = Console.ReadLine() ?? "";
         Console.Write("Password: ");
         string password = Console.ReadLine() ?? "";
-        
+
+        var session = new UsageSession(username, password);
+
         Console.Write("Start with online login? (Y/N): ");
         var loginChoice = Console.ReadKey();
         Console.WriteLine("\n");
@@ -28,12 +30,12 @@ class Program
         if (loginChoice.Key == ConsoleKey.Y)
         {
             Console.WriteLine("Processing online login...");
-            result = UsageTracker.ProcessOnlineLogin(username, password);
+            result = session.ProcessOnlineLogin();
             Console.WriteLine($"✓ {result.Message}\n");
         }
 
         Console.WriteLine("Processing offline login...");
-        result = UsageTracker.ProcessOfflineLogin(username, password);
+        result = session.ProcessOfflineLogin();
 
         if (!result.Success)
         {
@@ -47,15 +49,15 @@ class Program
 
         Console.WriteLine("Initial Offline Stats:");
         DisplayStats(result.Stats);
-        
+
         Console.WriteLine($"\n=== Starting Heartbeat (every {HEARTBEAT_INTERVAL_SECONDS} seconds) ===");
         Console.WriteLine("Watch the offline time accumulate!");
         Console.WriteLine("Press 'Q' to quit\n");
-        
+
         using (var cts = new CancellationTokenSource())
         {
-            var heartbeatTask = RunHeartbeat(username, password, cts.Token);
-            
+            var heartbeatTask = RunHeartbeat(session, cts.Token);
+
             while (true)
             {
                 if (Console.KeyAvailable)
@@ -70,37 +72,37 @@ class Program
                 }
                 await Task.Delay(100);
             }
-            
+
             await heartbeatTask;
         }
 
-        var finalResult = UsageTracker.UpdateHeartbeat(username, password);
+        var finalResult = session.UpdateHeartbeat();
         Console.WriteLine("\nFinal Usage Stats:");
         DisplayStats(finalResult.Stats);
-        
+
         Console.WriteLine("\nPress any key to exit...");
         Console.ReadKey();
     }
-    
-    static async Task RunHeartbeat(string username, string password, CancellationToken cancellationToken)
+
+    static async Task RunHeartbeat(UsageSession session, CancellationToken cancellationToken)
     {
         int heartbeatCount = 0;
-        
+
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
                 await Task.Delay(HEARTBEAT_INTERVAL_SECONDS * 1000, cancellationToken);
-                
+
                 heartbeatCount++;
                 Console.WriteLine($"\n--- Heartbeat #{heartbeatCount} at {DateTime.Now:HH:mm:ss} ---");
-                
-                var result = UsageTracker.UpdateHeartbeat(username, password);
-                
+
+                var result = session.UpdateHeartbeat();
+
                 if (!result.Success)
                 {
                     Console.WriteLine($"❌ {result.Message}");
-                    
+
                     if (result.ClockManipulationDetected)
                     {
                         Console.WriteLine("🚨 SECURITY ALERT: Clock manipulation detected!");
@@ -122,7 +124,7 @@ class Program
             Console.WriteLine("Heartbeat stopped gracefully.");
         }
     }
-    
+
     static void DisplayStats(UsageStats? stats)
     {
         if (stats == null)
@@ -143,15 +145,15 @@ class Program
         else
         {
             Console.WriteLine($"📊 Offline Mode:");
-            Console.WriteLine($"   • Remaining: {stats.RemainingOfflineHours:F2} hours");
-            Console.WriteLine($"   • Used: {stats.TotalOfflineHours:F2} hours");
-            Console.WriteLine($"   • Session: {stats.CurrentSessionDuration.TotalHours:F2} hours");
+            Console.WriteLine($"   • Remaining: {stats.RemainingOfflineHours:F4} hours");
+            Console.WriteLine($"   • Used: {stats.TotalOfflineHours:F4} hours");
+            Console.WriteLine($"   • Session: {stats.CurrentSessionDuration.TotalHours:F4} hours");
             if (stats.RemainingOfflineHours < UsageTracker.MAX_OFFLINE_HOURS * 0.10)
                 Console.WriteLine($"   🚨 CRITICAL: Less than {UsageTracker.MAX_OFFLINE_HOURS * 0.10:F1} hours left!");
             else if (stats.RemainingOfflineHours < UsageTracker.MAX_OFFLINE_HOURS * 0.50)
                 Console.WriteLine($"   ⚠️  Low: Less than {UsageTracker.MAX_OFFLINE_HOURS * 0.50:F1} hours remaining");
         }
     }
-    
+
 
 }
