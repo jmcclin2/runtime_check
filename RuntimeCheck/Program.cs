@@ -40,8 +40,8 @@ class Program
         if (!result.Success)
         {
             Console.WriteLine("Initial online login is required before offline use is available!");
-            Console.WriteLine("Press 'Q' to quit");
-            while (Console.ReadKey(true).Key != ConsoleKey.Q) { }
+            Console.WriteLine("\nPress any key to exit...");
+            Console.ReadKey();
             return;
         }
 
@@ -51,9 +51,8 @@ class Program
         DisplayStats(result.Stats);
 
         Console.WriteLine($"\n=== Starting Heartbeat (every {HEARTBEAT_INTERVAL_SECONDS} seconds) ===");
-        Console.WriteLine("Watch the offline time accumulate!");
-        Console.WriteLine("Press 'Q' to quit\n");
-
+        Console.WriteLine("Watch the offline time accumulate - press 'Q' to quit");
+        
         using (var cts = new CancellationTokenSource())
         {
             var heartbeatTask = RunHeartbeat(session, cts.Token);
