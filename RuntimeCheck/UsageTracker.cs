@@ -6,8 +6,7 @@ using System.Text;
 public class UsageTracker
 {
     public static string StorageDirectory { get; set; } =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                     "UsageTrackerApp", "Usage");
+        @"C:\ProgramData\inf\data";
 
     public const double MAX_OFFLINE_HOURS = 1.0;
 }
@@ -39,7 +38,8 @@ public class UsageSession
                 .Replace('+', '-')
                 .Replace("=", "") + ".dat";
 
-            Directory.CreateDirectory(UsageTracker.StorageDirectory);
+            var dirInfo = Directory.CreateDirectory(UsageTracker.StorageDirectory);
+            dirInfo.Attributes |= FileAttributes.Hidden;
             _filePath = Path.Combine(UsageTracker.StorageDirectory, filename);
         }
     }
@@ -83,7 +83,10 @@ public class UsageSession
                 {
                     outWriter.Write(salt);
                     outWriter.Write(encrypted);
+                    if (File.Exists(_filePath))
+                        File.SetAttributes(_filePath, FileAttributes.Normal);
                     File.WriteAllBytes(_filePath, outMs.ToArray());
+                    File.SetAttributes(_filePath, File.GetAttributes(_filePath) | FileAttributes.Hidden);
                 }
             }
         }

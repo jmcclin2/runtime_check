@@ -10,10 +10,10 @@ class Program
     {
         Console.WriteLine("=== Usage Tracker Test - Offline Mode ===\n");
 
-        UsageTracker.StorageDirectory = Path.Combine(
-            AppDomain.CurrentDomain.BaseDirectory,
-            "TestData"
-        );
+        //UsageTracker.StorageDirectory = Path.Combine(
+        //    AppDomain.CurrentDomain.BaseDirectory,
+        //    "TestData"
+        //);
 
         Console.Write("Username: ");
         string username = Console.ReadLine() ?? "";
