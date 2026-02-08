@@ -39,6 +39,7 @@ class Program
 
         if (!result.Success)
         {
+            Console.WriteLine($"ERROR: {result.Message}");
             Console.WriteLine("Initial online login is required before offline use is available!");
             Console.WriteLine("\nPress any key to exit...");
             Console.ReadKey();
@@ -102,14 +103,9 @@ class Program
                 {
                     Console.WriteLine($"❌ {result.Message}");
 
-                    if (result.ClockManipulationDetected)
-                    {
-                        Console.WriteLine("🚨 SECURITY ALERT: Clock manipulation detected!");
-                        Console.WriteLine("Application is terminating...");
-                        await Task.Delay(2000);
-                        Environment.Exit(1);
-                    }
-                    break;
+                    Console.WriteLine("\nPress any key to exit...");
+                    Console.ReadKey();
+                    Environment.Exit(result.ClockManipulationDetected ? 1 : 0);
                 }
                 else
                 {

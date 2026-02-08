@@ -92,34 +92,49 @@ public class UsageSession
         }
     }
 
-    private UsageData? LoadUsageData()
+    private (UsageData? data, bool corrupted) LoadUsageData()
     {
         if (!File.Exists(_filePath))
-            return null;
-
-        try
         {
-            byte[] fileData = File.ReadAllBytes(_filePath);
-            if (fileData.Length < 16)
-                return null;
+            Console.WriteLine("\nNo File found!");
+            return (null, false);
+        }
 
-            byte[] salt = new byte[16];
-            Array.Copy(fileData, 0, salt, 0, 16);
-            byte[] encrypted = new byte[fileData.Length - 16];
-            Array.Copy(fileData, 16, encrypted, 0, encrypted.Length);
+        byte[] fileData = File.ReadAllBytes(_filePath);
+        if (fileData.Length < 16)
+        {
+            Console.WriteLine("\nIncorrect file length!");
+            return (null, true);
+        }
 
-            var (key, iv) = DeriveKeyAndIV(salt);
+        byte[] salt = new byte[16];
+        Array.Copy(fileData, 0, salt, 0, 16);
+        byte[] encrypted = new byte[fileData.Length - 16];
+        Array.Copy(fileData, 16, encrypted, 0, encrypted.Length);
 
-            using (var aes = Aes.Create())
+        var (key, iv) = DeriveKeyAndIV(salt);
+
+        using (var aes = Aes.Create())
+        {
+            aes.Key = key;
+            aes.IV = iv;
+            byte[] decrypted;
+            try
             {
-                aes.Key = key;
-                aes.IV = iv;
-                byte[] decrypted = aes.CreateDecryptor().TransformFinalBlock(encrypted, 0, encrypted.Length);
+                decrypted = aes.CreateDecryptor().TransformFinalBlock(encrypted, 0, encrypted.Length);
+            }
+            catch
+            {
+                Console.WriteLine("\nDecryption failed! Data may have been tampered with.");
+                return (null, true);
+            }
 
-                using (var ms = new MemoryStream(decrypted))
-                using (var reader = new BinaryReader(ms))
+            using (var ms = new MemoryStream(decrypted))
+            using (var reader = new BinaryReader(ms))
+            {
+                try
                 {
-                    return new UsageData
+                    return (new UsageData
                     {
                         FirstLogin = new DateTime(reader.ReadInt64()),
                         LastLogin = new DateTime(reader.ReadInt64()),
@@ -127,20 +142,21 @@ public class UsageSession
                         TotalOfflineTime = new TimeSpan(reader.ReadInt64()),
                         IsOnline = reader.ReadBoolean(),
                         SessionStartTime = new DateTime(reader.ReadInt64())
-                    };
+                    }, false);
+                }
+                catch
+                {
+                    Console.WriteLine("\nFile contained invalid data!");
+                    return (null, true);
                 }
             }
-        }
-        catch (CryptographicException)
-        {
-            return null;
         }
     }
 
     public LoginResult ProcessOnlineLogin()
     {
         DateTime now = DateTime.Now;
-        UsageData? data = LoadUsageData();
+        var (data, corrupted) = LoadUsageData();
 
         if (data == null)
         {
@@ -184,14 +200,16 @@ public class UsageSession
     public LoginResult ProcessOfflineLogin()
     {
         DateTime now = DateTime.Now;
-        UsageData? data = LoadUsageData();
-
+        var (data, corrupted) = LoadUsageData();
+    
         if (data == null)
         {
             return new LoginResult
             {
                 Success = false,
-                Message = "First login must be online. Please connect to the internet."
+                Message = corrupted
+                    ? "Data file has been tampered with. Please connect to the internet to continue."
+                    : "First login must be online. Please connect to the internet."
             };
         }
 
@@ -250,14 +268,16 @@ public class UsageSession
     public HeartbeatResult UpdateHeartbeat()
     {
         DateTime now = DateTime.Now;
-        UsageData? data = LoadUsageData();
+        var (data, corrupted) = LoadUsageData();
 
         if (data == null)
         {
             return new HeartbeatResult
             {
                 Success = false,
-                Message = "No user data found."
+                Message = corrupted
+                    ? "Data file has been tampered with. Application will now exit."
+                    : "No user data found."
             };
         }
 
@@ -276,6 +296,19 @@ public class UsageSession
             }
 
             data.TotalOfflineTime += timeSinceLastUpdate;
+
+            if (data.TotalOfflineTime.TotalHours >= UsageTracker.MAX_OFFLINE_HOURS)
+            {
+                data.LastLogin = now;
+                SaveUsageData(data);
+
+                return new HeartbeatResult
+                {
+                    Success = false,
+                    Message = $"Offline usage limit exceeded ({data.TotalOfflineTime.TotalHours:F1} hours used). " +
+                              "Please connect to the internet to continue."
+                };
+            }
         }
 
         data.LastLogin = now;
